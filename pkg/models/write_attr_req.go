@@ -22,9 +22,9 @@ type WriteAttrReq struct {
 
 type WriteAttrData struct {
 	Path string `json:"path"`
-	Pmin string `json:"pmin"`
-	Pmax string `json:"pmax"`
-	Gt   string `json:"gt"`
-	Lt   string `json:"lt"`
-	St   string `json:"st"`
+	Pmin int64  `json:"pmin,omitempty"`
+	Pmax int64  `json:"pmax,omitempty"`
+	Gt   int64  `json:"gt,omitempty"`
+	Lt   int64  `json:"lt,omitempty"`
+	St   int64  `json:"st,omitempty"`
 }

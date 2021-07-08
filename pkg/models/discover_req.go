@@ -12,4 +12,8 @@ func UnmarshalDiscoverReq(data []byte) (DiscoverReq, error) {
 	return r, err
 }
 
-type DiscoverReq base_models.ReadDiscoverDeleteReq
+type DiscoverReq struct {
+	base_models.ReadDiscoverDeleteReq
+}
+
+type DiscoverReqData base_models.ReadDiscoverDeleteData

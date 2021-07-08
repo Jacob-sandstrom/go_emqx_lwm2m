@@ -5,214 +5,227 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"regexp"
 	"syscall"
 
 	"github.com/Jacob-sandstrom/go_emqx_lwm2m/pkg/models"
+	"github.com/Jacob-sandstrom/go_emqx_lwm2m/pkg/models/base_models"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-type (
-	ReqPayload struct {
-		ReqID   string    `json:"reqId"`
-		MsgType string    `json:"msgType"`
-		Data    DataTypes `json:"data"`
-	}
-	RespPayload struct {
-		ReqID   string    `json:"reqId,omitempty"`
-		MsgType string    `json:"msgType"`
-		Data    DataTypes `json:"data"`
-		Imei    string    `json:"imei,omitempty"`
-		Imsi    string    `json:"imsi,omitempty"`
-		SeqNum  string    `json:"seqNum,omitempty"`
-	}
+type RegisterMessageHandler func(models.RegisterResp)
 
-	DataTypes interface {
-		printData()
-	}
+type GeneralMessageHandler func(models.Resp)
 
-	Path struct {
-		Path string `json:"path"`
-	}
+type MessageHandler func(Client, mqtt.Message)
 
-	Attributes struct {
-		Path
-		PMin int `json:"pmin,omitempty"`
-		PMax int `json:"pmax,omitempty"`
-		GT   int `json:"gt,omitempty"`
-		LT   int `json:"lt,omitempty"`
-		ST   int `json:"st,omitempty"`
-	}
-
-	Register struct {
-		Ep              string   `json:"ep"`
-		LT              int      `json:"lt"`
-		Sms             string   `json:"sms"`
-		LWM2M           string   `json:"lwm2m"`
-		B               string   `json:"b"`
-		AlternativePath string   `json:"alternativePath"`
-		ObjectList      []string `json:"objectList"`
-	}
-)
-
-func (d Path) printData() {
-	fmt.Printf(`data: %v`, d)
+type Client interface {
+	mqtt.Client
+	ConnectMqtt()
+	read(string) error
 }
 
-func (d Attributes) printData() {
-	fmt.Printf(`data: %v`, d)
+type client struct {
+	mqtt.Client
+	Endpoint      string
+	RespHandler   MessageHandler
+	NotifyHandler MessageHandler
 }
 
-func (d Register) printData() {
-	fmt.Printf(`data: %v`, d)
+func NewClient(endpoint string) Client {
+	return &client{
+		Client:        NewMqttClient("tcp://127.0.0.1:1883"),
+		Endpoint:      endpoint,
+		RespHandler:   onRespReceived,
+		NotifyHandler: onNotifyReceived,
+	}
 }
 
-func main() {
-
-	// jsonReq := []byte(`
-	// 	{
-	// 		"reqId": 1,
-	// 		"msgType": "read",
-	// 		"data": {
-	// 			"path": "/3/0"
-	// 		}
-	// 	}`)
-
-	// req, err := models.UnmarshalReadReq(jsonReq)
-	// if err != nil {
-	// 	fmt.Print(err.Error())
-	// }
-
-	// fmt.Printf("%+v", req)
-
-	// jsonReq = []byte(`{"reqID":3097,"msgType":"discover","data":{"reqPath":"/3/0","content":["</3/0>","</3/0/0>,</3/0/1>,</3/0/2>,</3/0/3>,</3/0/4>,</3/0/5>,</3/0/6>;dim=1,</3/0/7>;dim=1,</3/0/8>;dim=1,</3/0/9>,</3/0/10>,</3/0/11>;dim=1,</3/0/13>,</3/0/14>,</3/0/15>,</3/0/16>,</3/0/17>,</3/0/18>,</3/0/19>,</3/0/20>,</3/0/21>,</3/0/22>;dim=1"],"codeMsg":"content","code":"2.05"}}`)
-
-	// resp, err := models.UnmarshalDiscoverResp(jsonReq)
-	// if err != nil {
-	// 	fmt.Print(err.Error())
-	// }
-
-	// fmt.Printf("\n\n%+v\n", resp)
-	// resp.Print()
-
-	//
-
-	//
-
-	//
-
-	//
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-	server := "tcp://35.228.122.91:1883"
+func NewMqttClient(server string) mqtt.Client {
+	server = "tcp://35.228.122.91:1883"
 	qos := 0
 
 	connOpts := mqtt.NewClientOptions().AddBroker(server).SetOrderMatters(false)
 	connOpts.OnConnect = func(c mqtt.Client) {
-		if token := c.Subscribe("lwm2m/+/up/resp", byte(qos), onMessageReceived); token.Wait() && token.Error() != nil {
+		// Uses emqx_lwm2m default topics
+		if token := c.Subscribe("lwm2m/+/up/resp", byte(qos), onRespReceived); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
-		if token := c.Subscribe("lwm2m/+/up/notify", byte(qos), onMessageReceived); token.Wait() && token.Error() != nil {
+		if token := c.Subscribe("lwm2m/+/up/notify", byte(qos), onNotifyReceived); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
 	}
 
-	client := mqtt.NewClient(connOpts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
+	return mqtt.NewClient(connOpts)
+}
+
+func (c *client) ConnectMqtt() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
+	if token := c.Connect(); token.Wait() && token.Error() != nil {
 		panic(token.Error())
 	} else {
-		fmt.Printf("Connected to %s\n", server)
+		op := c.OptionsReader()
+		fmt.Printf("Connected to %s\n", op.Servers())
 	}
 
-	<-c
+	<-ch
 }
 
-func Publish(client mqtt.Client, endpoint string, payload ReqPayload) {
-	p, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Print(err.Error())
-	}
+func main() {
+	// ch := make(chan os.Signal, 1)
+	// signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
-	token := client.Publish(fmt.Sprintf("lwm2m/%v/dn", endpoint), 0, false, p)
+	// server := "tcp://35.228.122.91:1883"
+	// qos := 0
+
+	// connOpts := mqtt.NewClientOptions().AddBroker(server).SetOrderMatters(false)
+	// connOpts.OnConnect = func(c mqtt.Client) {
+	// 	if token := c.Subscribe("lwm2m/+/up/resp", byte(qos), onRespReceived); token.Wait() && token.Error() != nil {
+	// 		panic(token.Error())
+	// 	}
+	// 	if token := c.Subscribe("lwm2m/+/up/notify", byte(qos), onNotifyReceived); token.Wait() && token.Error() != nil {
+	// 		panic(token.Error())
+	// 	}
+	// }
+	// mqttClient := mqtt.NewClient(connOpts)
+
+	// if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+	// 	panic(token.Error())
+	// } else {
+	// 	fmt.Printf("Connected to %s\n", server)
+	// }
+
+	client := NewClient("js_lwm2m_demo")
+
+	client.ConnectMqtt()
+
+	// <-ch
+}
+
+func (c *client) PublishMqtt(endpoint string, payload []byte) error {
+	fmt.Print("publish\n")
+	token := c.Publish(fmt.Sprintf("lwm2m/%v/dn", endpoint), 0, false, payload)
 	if token.Error() != nil {
 		fmt.Print(token.Error())
+		return token.Error()
 	}
+	return nil
 }
 
-func observe(client mqtt.Client, endpoint string, path string) {
-	fmt.Printf("\n%v %v %v", "observe", endpoint, path)
-	payload := ReqPayload{ReqID: "1", MsgType: "observe", Data: Attributes{Path: Path{path}}}
-	Publish(client, endpoint, payload)
+func (c *client) observe(path string) error {
+	fmt.Printf("\n%v %v %v", "observe", c.Endpoint, path)
+	req := models.ObserveReq{ReqID: 1, MsgType: "observe", Data: models.ObserveReqData{Path: path}}
+	payload, err := req.Marshal()
+	if err != nil {
+		return err
+	}
+	return c.PublishMqtt(c.Endpoint, payload)
 }
 
-func writeAttr(client mqtt.Client, endpoint string, path string) {
-	fmt.Printf("\n%v %v %v", "write-attr", endpoint, path)
-	payload := ReqPayload{ReqID: "1", MsgType: "write-attr", Data: Attributes{
-		Path: Path{path},
-		PMin: 10,
-		PMax: 20,
+func (c *client) writeAttr(values map[string]interface{}) error {
+	fmt.Printf("\n%v %v %v", "write-attr", c.Endpoint, values[`path`])
+	req := models.WriteAttrReq{ReqID: 1, MsgType: "write-attr", Data: models.WriteAttrData{
+		Path: values[`path`].(string),
+		Pmin: int64(values[`pmin`].(int)),
+		Pmax: int64(values[`pmax`].(int)),
 	}}
-	Publish(client, endpoint, payload)
+	payload, err := req.Marshal()
+	if err != nil {
+		return err
+	}
+	return c.PublishMqtt(c.Endpoint, payload)
 }
 
-func discover(client mqtt.Client, endpoint string, path string) {
-	fmt.Printf("\n%v %v %v", "discover", endpoint, path)
-	payload := ReqPayload{ReqID: "1", MsgType: "discover", Data: Attributes{Path: Path{path}}}
-	Publish(client, endpoint, payload)
+func (c *client) discover(path string) error {
+	fmt.Printf("\n%v %v %v", "discover", c.Endpoint, path)
+	req := models.DiscoverReq{base_models.ReadDiscoverDeleteReq{ReqID: 1, MsgType: "discover", Data: base_models.ReadDiscoverDeleteData{Path: path}}}
+	payload, err := req.Marshal()
+	if err != nil {
+		return err
+	}
+	return c.PublishMqtt(c.Endpoint, payload)
 }
 
-func onMessageReceived(client mqtt.Client, message mqtt.Message) {
+func (c *client) read(path string) error {
+	fmt.Printf("\n%v %v %v", "read", c.Endpoint, path)
+	req := models.ReadReq{base_models.ReadDiscoverDeleteReq{ReqID: 1, MsgType: "read", Data: base_models.ReadDiscoverDeleteData{Path: path}}}
+	payload, err := req.Marshal()
+	if err != nil {
+		return err
+	}
+	return c.PublishMqtt(c.Endpoint, payload)
+}
+
+func onRespReceived(mqttClient Client, message mqtt.Message) {
 	topic := message.Topic()
 	payload := message.Payload()
-	// endpoint := topic[6 : len(topic)-8]
+	endpoint := topic[6 : len(topic)-8]
 
 	fmt.Printf("\n%v", topic)
 
-	match, err := regexp.MatchString(`lwm2m\/.*\/up\/resp$`, topic)
+	var p map[string]interface{}
+	err := json.Unmarshal(payload, &p)
 	if err != nil {
 		panic(err.Error())
 	}
-	if match {
-		var p map[string]interface{}
-		err = json.Unmarshal(payload, &p)
+
+	switch p[`msgType`] {
+	case "register":
+		r, err := models.UnmarshalRegisterResp(payload)
 		if err != nil {
 			panic(err.Error())
 		}
-		// fmt.Print(p)
-		// fmt.Printf("\n%v", p[`msgType`])
+		fmt.Printf("%+v", r)
 
-		if p[`msgType`] == "register" {
-			var r models.RegisterResp
-			err := json.Unmarshal(payload, &r)
-			if err != nil {
-				panic(err.Error())
-			}
-			fmt.Printf("%+v", r)
-			// discover(client, endpoint, "/3")
-			// writeAttr(client, endpoint, "/3")
-			// observe(client, endpoint, "/3")
+		// c := NewClient(endpoint)
+		// c.ConnectMqtt()
+		// c.discover("/3")
+		// c.writeAttr(map[string]interface{}{"path": "/3", "pmin": 10, "pmax": 20})
+		mqttClient.read("/3")
+		// c.observe("/3")
+
+	case "read":
+		r, err := models.UnmarshalResp(payload)
+		if err != nil {
+			panic(err.Error())
 		}
-		if p[`msgType`] == "write-attr" {
-			var r models.WriteAttrResp
-			err := json.Unmarshal(payload, &r)
-			if err != nil {
-				panic(err.Error())
-			}
-			fmt.Printf("%+v", r)
-			// discover(client, endpoint, "/3")
-			// writeAttr(client, endpoint, "/3")
-			// observe(client, endpoint, "/3")
+		fmt.Printf("%+v", r)
+
+	case "discover":
+		r, err := models.UnmarshalResp(payload)
+		if err != nil {
+			panic(err.Error())
 		}
+		fmt.Printf("%+v", r)
+
+	case "write":
+	case "write-attr":
+		r, err := models.UnmarshalResp(payload)
+		if err != nil {
+			panic(err.Error())
+		}
+		fmt.Printf("%+v", r)
+
+	case "execute":
+	case "create":
+	case "delete":
+
+	default:
+
 	}
 
-	match, err = regexp.MatchString(`lwm2m\/.*\/up\/notify$`, topic)
-	if err != nil {
-		panic(err.Error())
-	}
-	if match {
+}
 
-	}
+func onNotifyReceived(mqttClient mqtt.Client, message mqtt.Message) {
+	topic := message.Topic()
+	payload := message.Payload()
+
+	fmt.Printf("\n%v", topic)
+	fmt.Printf("\n%v", payload)
+
+}
+
+func registerHandler(reg models.RegisterResp) {
 
 }
